@@ -1,0 +1,42 @@
+replicaCount: 2
+
+image:
+  repository: asia-south1-docker.pkg.dev/buoyant-episode-386713/application/demo-app
+  # Overridden by the pipeline with the commit SHA
+  tag: latest
+  pullPolicy: IfNotPresent
+
+serviceAccount:
+  # Set to false if the namespace's ServiceAccount is already managed elsewhere (e.g. Terraform)
+  create: true
+  name: app-api
+  gcpServiceAccount: app-api-cloudsql@buoyant-episode-386713.iam.gserviceaccount.com
+
+database:
+  name: app
+  user: app-api-cloudsql@buoyant-episode-386713.iam
+  port: 5432
+
+cloudSqlProxy:
+  image: gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.25.4
+  instanceConnectionName: buoyant-episode-386713:asia-south1:agileengine-capstone-dev-postgres
+  healthPort: 9090
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+
+containerPort: 8080
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 256Mi
+
+service:
+  port: 80
+
+gateway:
+  enabled: true
+  # Global external Application Load Balancer (L7)
+  className: gke-l7-global-external-managed

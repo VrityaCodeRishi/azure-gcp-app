@@ -1,0 +1,6 @@
+apiVersion: v2
+name: demo-app
+description: Demo web app on GKE with a Cloud SQL Auth Proxy sidecar, exposed through the Gateway API
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

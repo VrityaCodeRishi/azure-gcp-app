@@ -1,4 +1,7 @@
-trigger: none
+trigger:
+  branches:
+    include:
+      - main
 
 pool:
   vmImage: ubuntu-latest
@@ -7,10 +10,21 @@ variables:
   Azure.WorkloadIdentity.Connection: google-cloud
 
   GoogleCloud.ProjectId: buoyant-episode-386713
+  GoogleCloud.Region: asia-south1
   GoogleCloud.WorkloadIdentity.ProjectNumber: "1092632517646"
   GoogleCloud.WorkloadIdentity.Pool: azure-devops
   GoogleCloud.WorkloadIdentity.Provider: azure-devops-oidc
   GoogleCloud.WorkloadIdentity.ServiceAccount: azure-devops-deployer@buoyant-episode-386713.iam.gserviceaccount.com
+
+  GKE.Cluster: agileengine-capstone-dev-gke
+  GKE.Namespace: app
+
+  Image.Registry: $(GoogleCloud.Region)-docker.pkg.dev
+  Image.Repository: $(Image.Registry)/$(GoogleCloud.ProjectId)/application/demo-app
+  Image.Tag: $(Build.SourceVersion)
+
+  Helm.Release: demo-app
+  Helm.Chart: $(Build.SourcesDirectory)/charts/demo-app
 
   GOOGLE_APPLICATION_CREDENTIALS: $(Pipeline.Workspace)/.workload_identity.wlconfig
 
@@ -41,28 +55,29 @@ steps:
         EOF
 
   - task: Bash@3
-    displayName: Verify Google Cloud authentication
+    displayName: Authenticate gcloud
     inputs:
       targetType: inline
       script: |
         set -euo pipefail
 
-        gcloud auth login \
-          --cred-file="$GOOGLE_APPLICATION_CREDENTIALS" \
-          --brief
-
+        gcloud auth login --cred-file="$GOOGLE_APPLICATION_CREDENTIALS" --brief
         gcloud config set project "$(GoogleCloud.ProjectId)"
 
-        gcloud auth list
+  - task: Bash@3
+    displayName: Build and push image
+    inputs:
+      targetType: inline
+      script: |
+        set -euo pipefail
 
-        gcloud container clusters describe \
-          agileengine-capstone-dev-gke \
-          --region asia-south1 \
-          --project "$(GoogleCloud.ProjectId)" \
-          --format="value(name,location,status)"
+        gcloud auth configure-docker "$(Image.Registry)" --quiet
+
+        docker build -t "$(Image.Repository):$(Image.Tag)" "$(Build.SourcesDirectory)/app"
+        docker push "$(Image.Repository):$(Image.Tag)"
 
   - task: Bash@3
-    displayName: Deploy test pod to GKE
+    displayName: Connect to GKE
     inputs:
       targetType: inline
       script: |
@@ -78,33 +93,56 @@ steps:
           sudo apt-get install -y google-cloud-cli-gke-gcloud-auth-plugin
         fi
 
-        gcloud container clusters get-credentials \
-          agileengine-capstone-dev-gke \
-          --region asia-south1 \
+        gcloud container clusters get-credentials "$(GKE.Cluster)" \
+          --region "$(GoogleCloud.Region)" \
           --project "$(GoogleCloud.ProjectId)"
 
-        POD="azure-devops-test-$(Build.BuildId)"
+  - task: Bash@3
+    displayName: Deploy Helm chart
+    inputs:
+      targetType: inline
+      script: |
+        set -euo pipefail
 
-        # Always clean up the pod, even if a later command fails
-        trap 'kubectl delete pod "$POD" --namespace default --ignore-not-found' EXIT
+        helm upgrade --install "$(Helm.Release)" "$(Helm.Chart)" \
+          --namespace "$(GKE.Namespace)" \
+          --create-namespace \
+          --set image.repository="$(Image.Repository)" \
+          --set image.tag="$(Image.Tag)" \
+          --wait \
+          --timeout 10m
 
-        kubectl apply --namespace default -f - <<EOF
-        apiVersion: v1
-        kind: Pod
-        metadata:
-          name: $POD
-          labels:
-            app: azure-devops-test
-        spec:
-          restartPolicy: Never
-          containers:
-            - name: hello
-              image: busybox:1.36
-              command: ["sh", "-c", "echo Hello from Azure DevOps build $(Build.BuildId) on GKE"]
-        EOF
+        kubectl --namespace "$(GKE.Namespace)" get deploy,pods,svc,gateway,httproute
 
-        kubectl wait --namespace default \
-          --for=jsonpath='{.status.phase}'=Succeeded \
-          "pod/$POD" --timeout=180s
+  - task: Bash@3
+    displayName: Smoke test through the load balancer
+    inputs:
+      targetType: inline
+      script: |
+        set -euo pipefail
 
-        kubectl logs --namespace default "$POD"
+        # Provisioning a new external load balancer can take several minutes
+        kubectl --namespace "$(GKE.Namespace)" wait "gateway/$(Helm.Release)" \
+          --for=condition=Programmed --timeout=15m
+
+        ADDRESS=$(kubectl --namespace "$(GKE.Namespace)" get "gateway/$(Helm.Release)" \
+          -o jsonpath='{.status.addresses[0].value}')
+        echo "Gateway address: http://$ADDRESS"
+
+        # The load balancer can return 404/502 for a few minutes after it's programmed
+        for attempt in $(seq 1 30); do
+          if curl -fsS --max-time 10 "http://$ADDRESS/healthz"; then
+            echo
+            break
+          fi
+          if [ "$attempt" -eq 30 ]; then
+            echo "Load balancer did not become healthy in time" >&2
+            exit 1
+          fi
+          echo "Attempt $attempt: not ready yet, retrying in 20s"
+          sleep 20
+        done
+
+        echo "--- /db ---"
+        curl -fsS --max-time 15 "http://$ADDRESS/db"
+        echo
