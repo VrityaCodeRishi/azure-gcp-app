@@ -27,21 +27,6 @@ steps:
 
         printf '%s' "$idToken" > "$(Pipeline.Workspace)/.workload_identity.jwt"
 
-        # DEBUG: print token claims (header + payload only, never the signature)
-        python3 - "$(Pipeline.Workspace)/.workload_identity.jwt" <<'PY'
-        import base64, json, sys
-        token = open(sys.argv[1]).read().strip()
-        for name, part in zip(("header", "claims"), token.split(".")[:2]):
-            part += "=" * (-len(part) % 4)
-            print(f"--- {name} ---")
-            data = json.loads(base64.urlsafe_b64decode(part))
-            print(json.dumps(data, indent=2))
-            if name == "claims":
-                # Spaced out so Azure DevOps log masking doesn't replace them with ***
-                for key in ("iss", "sub", "aud"):
-                    print(f"{key} (spaced): {' '.join(str(data.get(key)))}")
-        PY
-
         cat > "$GOOGLE_APPLICATION_CREDENTIALS" <<EOF
         {
           "type": "external_account",
@@ -75,3 +60,46 @@ steps:
           --region asia-south1 \
           --project "$(GoogleCloud.ProjectId)" \
           --format="value(name,location,status)"
+
+  - task: Bash@3
+    displayName: Deploy test pod to GKE
+    inputs:
+      targetType: inline
+      script: |
+        set -euo pipefail
+
+        # kubectl auth to GKE needs this plugin; install it if the agent image lacks it
+        if ! command -v gke-gcloud-auth-plugin >/dev/null; then
+          sudo apt-get install -y google-cloud-cli-gke-gcloud-auth-plugin
+        fi
+
+        gcloud container clusters get-credentials \
+          agileengine-capstone-dev-gke \
+          --region asia-south1 \
+          --project "$(GoogleCloud.ProjectId)"
+
+        POD="azure-devops-test-$(Build.BuildId)"
+
+        # Always clean up the pod, even if a later command fails
+        trap 'kubectl delete pod "$POD" --namespace default --ignore-not-found' EXIT
+
+        kubectl apply --namespace default -f - <<EOF
+        apiVersion: v1
+        kind: Pod
+        metadata:
+          name: $POD
+          labels:
+            app: azure-devops-test
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: hello
+              image: busybox:1.36
+              command: ["sh", "-c", "echo Hello from Azure DevOps build $(Build.BuildId) on GKE"]
+        EOF
+
+        kubectl wait --namespace default \
+          --for=jsonpath='{.status.phase}'=Succeeded \
+          "pod/$POD" --timeout=180s
+
+        kubectl logs --namespace default "$POD"
