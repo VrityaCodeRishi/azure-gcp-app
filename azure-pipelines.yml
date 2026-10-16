@@ -27,6 +27,16 @@ steps:
 
         printf '%s' "$idToken" > "$(Pipeline.Workspace)/.workload_identity.jwt"
 
+        # DEBUG: print token claims (header + payload only, never the signature)
+        python3 - "$(Pipeline.Workspace)/.workload_identity.jwt" <<'PY'
+        import base64, json, sys
+        token = open(sys.argv[1]).read().strip()
+        for name, part in zip(("header", "claims"), token.split(".")[:2]):
+            part += "=" * (-len(part) % 4)
+            print(f"--- {name} ---")
+            print(json.dumps(json.loads(base64.urlsafe_b64decode(part)), indent=2))
+        PY
+
         cat > "$GOOGLE_APPLICATION_CREDENTIALS" <<EOF
         {
           "type": "external_account",
