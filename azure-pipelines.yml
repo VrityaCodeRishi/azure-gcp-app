@@ -1,0 +1,62 @@
+trigger: none
+
+pool:
+  vmImage: ubuntu-latest
+
+variables:
+  Azure.WorkloadIdentity.Connection: google-cloud
+
+  GoogleCloud.ProjectId: buoyant-episode-386713
+  GoogleCloud.WorkloadIdentity.ProjectNumber: "1092632517646"
+  GoogleCloud.WorkloadIdentity.Pool: azure-devops
+  GoogleCloud.WorkloadIdentity.Provider: azure-devops-oidc
+  GoogleCloud.WorkloadIdentity.ServiceAccount: azure-devops-deployer@buoyant-episode-386713.iam.gserviceaccount.com
+
+  GOOGLE_APPLICATION_CREDENTIALS: $(Pipeline.Workspace)/.workload_identity.wlconfig
+
+steps:
+  - task: AzureCLI@2
+    displayName: Create Google Cloud credentials
+    inputs:
+      azureSubscription: $(Azure.WorkloadIdentity.Connection)
+      addSpnToEnvironment: true
+      scriptType: bash
+      scriptLocation: inlineScript
+      inlineScript: |
+        set -euo pipefail
+
+        printf '%s' "$idToken" > "$(Pipeline.Workspace)/.workload_identity.jwt"
+
+        cat > "$GOOGLE_APPLICATION_CREDENTIALS" <<EOF
+        {
+          "type": "external_account",
+          "audience": "//iam.googleapis.com/projects/$(GoogleCloud.WorkloadIdentity.ProjectNumber)/locations/global/workloadIdentityPools/$(GoogleCloud.WorkloadIdentity.Pool)/providers/$(GoogleCloud.WorkloadIdentity.Provider)",
+          "subject_token_type": "urn:ietf:params:oauth:token-type:jwt",
+          "token_url": "https://sts.googleapis.com/v1/token",
+          "credential_source": {
+            "file": "$(Pipeline.Workspace)/.workload_identity.jwt"
+          },
+          "service_account_impersonation_url": "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/$(GoogleCloud.WorkloadIdentity.ServiceAccount):generateAccessToken"
+        }
+        EOF
+
+  - task: Bash@3
+    displayName: Verify Google Cloud authentication
+    inputs:
+      targetType: inline
+      script: |
+        set -euo pipefail
+
+        gcloud auth login \
+          --cred-file="$GOOGLE_APPLICATION_CREDENTIALS" \
+          --brief
+
+        gcloud config set project "$(GoogleCloud.ProjectId)"
+
+        gcloud auth list
+
+        gcloud container clusters describe \
+          agileengine-capstone-dev-gke \
+          --region asia-south1 \
+          --project "$(GoogleCloud.ProjectId)" \
+          --format="value(name,location,status)"
