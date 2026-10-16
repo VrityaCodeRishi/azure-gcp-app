@@ -34,7 +34,12 @@ steps:
         for name, part in zip(("header", "claims"), token.split(".")[:2]):
             part += "=" * (-len(part) % 4)
             print(f"--- {name} ---")
-            print(json.dumps(json.loads(base64.urlsafe_b64decode(part)), indent=2))
+            data = json.loads(base64.urlsafe_b64decode(part))
+            print(json.dumps(data, indent=2))
+            if name == "claims":
+                # Spaced out so Azure DevOps log masking doesn't replace them with ***
+                for key in ("iss", "sub", "aud"):
+                    print(f"{key} (spaced): {' '.join(str(data.get(key)))}")
         PY
 
         cat > "$GOOGLE_APPLICATION_CREDENTIALS" <<EOF
