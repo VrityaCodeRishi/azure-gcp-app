@@ -42,3 +42,9 @@ gateway:
   className: gke-l7-global-external-managed
   # Reserved global static IP (managed in Terraform). Leave empty for an ephemeral IP.
   staticIpName: agileengine-capstone-dev-gateway-ip
+  https:
+    enabled: true
+    # Certificate Manager map (managed in Terraform) holding the cert for app.yyyyzzzz.co.in
+    certificateMap: agileengine-capstone-dev-certificate-map
+    # Answer plain HTTP with a 301 to HTTPS instead of serving the app on port 80
+    redirectHttp: true

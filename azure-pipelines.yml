@@ -23,6 +23,8 @@ variables:
   Image.Repository: $(Image.Registry)/$(GoogleCloud.ProjectId)/application/demo-app
   Image.Tag: $(Build.SourceVersion)
 
+  App.Hostname: app.yyyyzzzz.co.in
+
   Helm.Release: demo-app
   Helm.Chart: $(Build.SourcesDirectory)/charts/demo-app
 
@@ -127,22 +129,40 @@ steps:
 
         ADDRESS=$(kubectl --namespace "$(GKE.Namespace)" get "gateway/$(Helm.Release)" \
           -o jsonpath='{.status.addresses[0].value}')
-        echo "Gateway address: http://$ADDRESS"
+        echo "Gateway address: $ADDRESS"
+        HOST="$(App.Hostname)"
 
-        # The load balancer can return 404/502 for a few minutes after it's programmed
+        # 1. Plain HTTP should redirect to HTTPS. The load balancer can return
+        #    404/502 for a few minutes after it's programmed.
         for attempt in $(seq 1 30); do
-          if curl -fsS --max-time 10 "http://$ADDRESS/healthz"; then
-            echo
+          CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "http://$ADDRESS/healthz" || true)
+          if [ "$CODE" = "301" ]; then
+            echo "HTTP -> HTTPS redirect OK"
             break
           fi
           if [ "$attempt" -eq 30 ]; then
-            echo "Load balancer did not become healthy in time" >&2
+            echo "Load balancer did not start redirecting in time (last HTTP status: $CODE)" >&2
             exit 1
           fi
-          echo "Attempt $attempt: not ready yet, retrying in 20s"
+          echo "Attempt $attempt: got HTTP $CODE, retrying in 20s"
           sleep 20
         done
 
-        echo "--- /db ---"
-        curl -fsS --max-time 15 "http://$ADDRESS/db"
-        echo
+        # 2. HTTPS on the real hostname, pinned to the Gateway IP so DNS isn't involved.
+        #    This only works once the Certificate Manager cert is ACTIVE.
+        CURL_HTTPS=(curl -fsS --max-time 15 --resolve "$HOST:443:$ADDRESS")
+        for attempt in $(seq 1 15); do
+          if "${CURL_HTTPS[@]}" "https://$HOST/healthz"; then
+            echo
+            echo "--- /db ---"
+            "${CURL_HTTPS[@]}" "https://$HOST/db"
+            echo
+            exit 0
+          fi
+          echo "Attempt $attempt: HTTPS not ready yet, retrying in 20s"
+          sleep 20
+        done
+
+        # The deploy itself worked; a cert that is still provisioning shouldn't fail the run
+        echo "##vso[task.logissue type=warning]HTTPS on $HOST is not serving yet. Check the certificate: gcloud certificate-manager certificates describe agileengine-capstone-dev-certificate --location=global"
+        echo "##vso[task.complete result=SucceededWithIssues;]"
