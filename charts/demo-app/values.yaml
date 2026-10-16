@@ -40,3 +40,5 @@ gateway:
   enabled: true
   # Global external Application Load Balancer (L7)
   className: gke-l7-global-external-managed
+  # Reserved global static IP (managed in Terraform). Leave empty for an ephemeral IP.
+  staticIpName: agileengine-capstone-dev-gateway-ip

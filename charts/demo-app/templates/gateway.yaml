@@ -7,6 +7,11 @@ metadata:
     {{- include "demo-app.labels" . | nindent 4 }}
 spec:
   gatewayClassName: {{ .Values.gateway.className }}
+  {{- with .Values.gateway.staticIpName }}
+  addresses:
+    - type: NamedAddress
+      value: {{ . | quote }}
+  {{- end }}
   listeners:
     - name: http
       protocol: HTTP
